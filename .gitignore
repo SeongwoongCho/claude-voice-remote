@@ -1,0 +1,4 @@
+node_modules/
+*.raw
+*.wav
+.DS_Store
