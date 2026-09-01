@@ -76,3 +76,24 @@ if ! grep -q "module-native-protocol-tcp" "$PULSE_DEFAULT_PA" 2>/dev/null; then
   echo "  echo 'load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1' >> ~/.config/pulse/default.pa"
   echo ""
 fi
+
+# ── Persistent tunnel (autossh) ──
+echo -e "${BLUE}[선택]${NC} 영구 SSH 터널 설정..."
+if command -v autossh &>/dev/null; then
+  echo -e "${GREEN}  ✓${NC} autossh 설치됨"
+  if pgrep -f "autossh.*24713" &>/dev/null; then
+    echo -e "${GREEN}  ✓${NC} 터널 이미 실행 중"
+  else
+    echo ""
+    echo "  영구 터널 시작 (터미널 꺼도 유지):"
+    echo ""
+    echo "  autossh -M 0 -f -N -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -R 24713:localhost:4713 your-server"
+    echo ""
+  fi
+else
+  echo -e "${YELLOW}  ⚠${NC} autossh 미설치 — 터미널 닫으면 터널 끊김"
+  echo ""
+  echo "  설치: sudo apt-get install autossh"
+  echo "  이후: autossh -M 0 -f -N -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -R 24713:localhost:4713 your-server"
+  echo ""
+fi

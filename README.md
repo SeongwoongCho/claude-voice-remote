@@ -139,6 +139,93 @@ Forwarding port.
 
 > **주의:** `~C`는 줄 시작에서만 동작합니다. Enter를 먼저 누르세요.
 
+#### 방법 D: 영구 터널 — 터미널 꺼도 유지 (권장)
+
+일반 SSH 세션은 터미널을 닫으면 같이 끊깁니다. `autossh`를 사용하면 **터미널 종료, 네트워크 끊김에도 자동 재접속**됩니다.
+
+**autossh 설치 (WSL에서):**
+
+```bash
+sudo apt-get install autossh
+```
+
+**백그라운드 터널 실행:**
+
+```bash
+autossh -M 0 -f -N \
+  -o "ServerAliveInterval=60" \
+  -o "ServerAliveCountMax=3" \
+  -R 24713:localhost:4713 \
+  your-server
+```
+
+| 플래그 | 의미 |
+|--------|------|
+| `-M 0` | OS의 TCP keepalive 사용 (별도 모니터 포트 불필요) |
+| `-f` | 백그라운드 실행 |
+| `-N` | 셸 안 열고 터널만 유지 |
+
+**터널 확인/종료:**
+
+```bash
+# 확인
+ps aux | grep autossh
+
+# 종료
+pkill -f "autossh.*24713"
+```
+
+##### Windows 로그인 시 자동 실행 (systemd)
+
+WSL에서 systemd가 활성화되어 있으면 (`systemctl` 동작 확인):
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/claude-voice-tunnel.service << 'EOF'
+[Unit]
+Description=Claude Voice SSH Tunnel (autossh)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/autossh -M 0 -N -o "ServerAliveInterval=60" -o "ServerAliveCountMax=3" -R 24713:localhost:4713 your-server
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable claude-voice-tunnel
+systemctl --user start claude-voice-tunnel
+```
+
+```bash
+# 상태 확인
+systemctl --user status claude-voice-tunnel
+
+# 로그
+journalctl --user -u claude-voice-tunnel -f
+```
+
+##### Windows 로그인 시 자동 실행 (systemd 없는 경우)
+
+WSL `~/.bashrc`에 추가:
+
+```bash
+# Claude Voice Tunnel - autossh 자동 시작
+if ! pgrep -f "autossh.*24713" &>/dev/null; then
+  autossh -M 0 -f -N \
+    -o "ServerAliveInterval=60" \
+    -o "ServerAliveCountMax=3" \
+    -R 24713:localhost:4713 \
+    your-server 2>/dev/null
+fi
+```
+
+WSL 터미널을 처음 열 때 자동으로 터널이 시작됩니다.
+
 ### Step 3: Linux 서버 설정 (Docker 외부)
 
 SSH 접속 후 서버에서 실행:
