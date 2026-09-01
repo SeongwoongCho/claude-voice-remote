@@ -109,6 +109,17 @@ Host your-server
     RemoteForward 24713 localhost:4713
 ```
 
+SSH 연결이 끊기면 터널도 같이 죽으므로 **keepalive 설정을 권장**합니다:
+
+```ssh-config
+Host your-server
+    HostName 192.168.x.x
+    User your-username
+    RemoteForward 24713 localhost:4713
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+```
+
 이후 `ssh your-server`로 접속하면 자동으로 리버스 터널이 잡힙니다.
 
 #### 방법 B: 명령줄에서 직접 지정
@@ -229,31 +240,78 @@ claude
 
 > **중요:** Docker가 매핑한 포트 범위(예: 10040-10059)와 SSH 터널 포트가 겹치면 안 됩니다. Docker 포트 매핑이 SSH 터널보다 우선하여 연결이 실패합니다.
 
-## 매번 SSH 접속 시 해야 할 것
+## 재접속 시 자동화
 
-### 자동화된 부분 (한 번 설정하면 끝)
+SSH 접속을 끊었다 다시 연결하면 터널과 tunnel-source가 모두 초기화됩니다. 아래 설정으로 **전체 자동화**할 수 있습니다.
 
-- [x] SSH config의 `RemoteForward` → SSH 접속 시 자동 터널
-- [x] Docker `~/.asoundrc`, `~/.config/pulse/client.conf` → 영구
-- [x] Docker `~/.zshrc`의 `PULSE_SERVER` → 영구
+### 자동화 체크리스트
 
-### 수동으로 해야 할 것
+| 구성 요소 | 자동화 | 설정 위치 |
+|-----------|--------|-----------|
+| SSH 리버스 터널 | `RemoteForward` | WSL `~/.ssh/config` |
+| SSH keepalive | `ServerAliveInterval` | WSL `~/.ssh/config` |
+| WSL PulseAudio TCP | `default.pa` | WSL `~/.config/pulse/default.pa` |
+| 서버 tunnel-source | `.bashrc` 스크립트 | 서버 `~/.bashrc` |
+| Docker ALSA/PulseAudio | `setup-docker.sh` | Docker (1회) |
+| Docker `PULSE_SERVER` | `.zshrc` | Docker (1회) |
 
-SSH 접속 후 **Linux 서버**에서:
+### 서버 자동화 (핵심)
+
+`setup-server.sh --auto`를 실행하면 서버 `~/.bashrc`에 자동 로드 스크립트가 추가됩니다.
+
+또는 수동으로 **Linux 서버**의 `~/.bashrc` (또는 `~/.zshrc`)에 추가:
 
 ```bash
-pactl load-module module-tunnel-source server=tcp:localhost:24713
+# Claude Code Voice Mode - tunnel-source 자동 등록
+# SSH 리버스 터널(24713)이 열려있으면 tunnel-source를 자동으로 로드/재로드
+_claude_voice_tunnel() {
+  local port="${CLAUDE_VOICE_TUNNEL_PORT:-24713}"
+  if ! ss -tlnp 2>/dev/null | grep -q ":${port}"; then
+    return
+  fi
+  local current_src
+  current_src=$(pactl list sources short 2>/dev/null | grep "tunnel-source" || true)
+  if [ -n "$current_src" ]; then
+    if echo "$current_src" | grep -q "RUNNING\|IDLE"; then
+      return  # 이미 정상 동작 중
+    fi
+    # SUSPENDED/FAILED 상태면 재로드
+    pactl unload-module module-tunnel-source 2>/dev/null
+  fi
+  pactl load-module module-tunnel-source "server=tcp:localhost:${port}" 2>/dev/null
+  pactl set-default-source "tunnel-source.tcp:localhost:${port}" 2>/dev/null
+}
+_claude_voice_tunnel
 ```
 
-> 서버 PulseAudio/PipeWire가 재시작되면 tunnel-source가 사라지므로 다시 로드해야 합니다.
+이 스크립트는:
+1. SSH 터널 포트(24713)가 열려있는지 확인
+2. tunnel-source가 이미 정상이면 스킵
+3. SUSPENDED/FAILED 상태면 재로드
+4. 터널이 없으면 아무것도 안 함 (일반 SSH 접속에 영향 없음)
 
-#### 서버에서도 자동화하려면
+### WSL 자동화
+
+WSL `~/.config/pulse/default.pa`에 추가하면 PulseAudio TCP 모듈이 자동 로드됩니다:
 
 ```bash
-# ~/.bashrc 또는 ~/.zshrc에 추가 (Linux 서버)
-if ! pactl list modules short 2>/dev/null | grep -q "module-tunnel-source"; then
-  pactl load-module module-tunnel-source server=tcp:localhost:24713 2>/dev/null
-fi
+mkdir -p ~/.config/pulse
+echo "load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
+  >> ~/.config/pulse/default.pa
+```
+
+### 완전 자동화 후 워크플로우
+
+모든 자동화 설정이 끝나면:
+
+```bash
+# WSL에서 SSH 접속 (이것만 하면 됨)
+ssh your-server
+
+# 서버 로그인 시 자동으로 tunnel-source 등록됨
+# Docker 컨테이너 진입 후 바로 사용 가능
+claude
+# /voice → Space
 ```
 
 ## 트러블슈팅
@@ -277,6 +335,22 @@ timeout 1 bash -c "echo > /dev/tcp/172.17.0.1/4713" && echo "OK" || echo "FAIL"
 
 - Docker 포트 매핑과 SSH 터널 포트 충돌 → 다른 포트 사용
 - PulseAudio 인증 실패 → `auth-anonymous=1` 확인
+
+### 재접속 후 보이스 모드 안 됨
+
+SSH를 끊었다 다시 접속하면 터널이 초기화됩니다:
+1. WSL → 서버 SSH 재접속 (`RemoteForward` 포함)
+2. 서버에서 `pactl unload-module module-tunnel-source && pactl load-module module-tunnel-source server=tcp:localhost:24713`
+3. 또는 `setup-server.sh --auto`로 자동화 설정
+
+### SSH 터널이 자주 끊김
+
+`~/.ssh/config`에 keepalive 추가:
+```ssh-config
+Host your-server
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+```
 
 ### 녹음은 되지만 무음
 
